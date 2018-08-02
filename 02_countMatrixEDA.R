@@ -41,6 +41,20 @@ table( i < 3)
 mData = mData[!(i< 3),]
 dim(mData)
 
+ivProb = apply(mData, 1, function(inData) {
+  inData[is.na(inData) | !is.finite(inData)] = 0
+  inData = as.logical(inData)
+  lData = list('success'=sum(inData), fail=sum(!inData))
+  return(mean(rbeta(1000, lData$success + 0.5, lData$fail + 0.5)))
+})
+
+hist(ivProb)
+
+table(ivProb < 0.8)
+
+mData = mData[!(ivProb < 0.8), ]
+dim(mData)
+
 library(DESeq2)
 sf = estimateSizeFactorsForMatrix(mData)
 mData.norm = sweep(mData, 2, sf, '/')
@@ -61,6 +75,7 @@ oDiag.2 = CDiagnosticPlots(log(mData+1), 'Original')
 
 # the batch variable we wish to colour by, 
 # this can be any grouping/clustering in the data capture process
+str(dfSample)
 fBatch = factor(dfSample$group1)
 fBatch = factor(dfSample$group2)
 
@@ -99,22 +114,22 @@ plot.PCA(oDiag.1, fBatch, csLabels = dfSample$group2)
 plot.dendogram(oDiag.1, fBatch, labels_cex = 0.7)
 plot.dendogram(oDiag.2, fBatch, labels_cex = 0.7)
 
-## extreme values
-oDiag.1 = calculateExtremeValues(oDiag.1)
-oDiag.2 = calculateExtremeValues(oDiag.2)
-m1 = mGetExtremeValues(oDiag.1)
-m2 = mGetExtremeValues(oDiag.2)
-
-## samples with most extreme values
-apply(m1, 2, function(x) sum(x > 0))
-apply(m2, 2, function(x) sum(x > 0))
-
-## variables that are contributing to this
-v1 = apply(m1, 1, function(x) sum(x > 0))
-v2 = apply(m2, 1, function(x) sum(x > 0))
-
-which(v1 > 0)
-which(v2 > 0)
+# ## extreme values
+# oDiag.1 = calculateExtremeValues(oDiag.1)
+# oDiag.2 = calculateExtremeValues(oDiag.2)
+# m1 = mGetExtremeValues(oDiag.1)
+# m2 = mGetExtremeValues(oDiag.2)
+# 
+# ## samples with most extreme values
+# apply(m1, 2, function(x) sum(x > 0))
+# apply(m2, 2, function(x) sum(x > 0))
+# 
+# ## variables that are contributing to this
+# v1 = apply(m1, 1, function(x) sum(x > 0))
+# v2 = apply(m2, 1, function(x) sum(x > 0))
+# 
+# which(v1 > 0)
+# which(v2 > 0)
 
 ###############################################################################################
 ################ clusters and covariates explaining variance
@@ -172,26 +187,46 @@ lines(density(fitted(fit.lme2)))
 lines(density(fitted(fit.lme1)), col=2)
 lines(density(fitted(fit.lme3)), col=3)
 
-############ make a lattice plot
+## fit model with stan
+library(rstan)
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+
+stanDso = rstan::stan_model(file='tResponse2RandomEffectsNoFixed.stan')
+
+
+### try a t model without mixture
+lStanData = list(Ntotal=nrow(dfData), Nclusters1=nlevels(dfData$Coef),
+                 Nclusters2=nlevels(dfData$Coef.adj1),
+                 NgroupMap1=as.numeric(dfData$Coef),
+                 NgroupMap2=as.numeric(dfData$Coef.adj1),
+                 y=dfData$values, 
+                 gammaShape=0.5, gammaRate=1e-4)
+
+fit.stan = sampling(stanDso, data=lStanData, iter=10000, chains=4,
+                    pars=c('betas', 'sigmaRan1', 'sigmaRan2',
+                           'nu', 'sigmaPop', 'mu',
+                           'rGroupsJitter1', 'rGroupsJitter2'),
+                    cores=4)#, init=initf, control=list(adapt_delta=0.99, max_treedepth = 12))
+
+print(fit.stan, c('betas', 'sigmaRan1', 'sigmaRan2', 'sigmaPop', 'nu'), digits=3)
+traceplot(fit.stan, 'betas')
+traceplot(fit.stan, 'sigmaRan1')
+traceplot(fit.stan, 'sigmaRan2')
+
+
+m = cbind(extract(fit.stan)$sigmaRan1, extract(fit.stan)$sigmaRan2) 
+dim(m)
+colnames(m) = c('Treatment', 'Patient')
+pairs(m, pch=20, col='lightgrey', cex=0.5)
+m = log(m)
+
 library(lattice)
-## spikein normalisation
-sf2 = estimateSizeFactorsForMatrix(mData, controlGenes = grep('ERCC', x = rownames(mData)))
-mData.ercc = sweep(mData, 2, sf2, '/')
+df = stack(data.frame(m))
+histogram(~ values | ind, data=df, xlab='Log SD')
 
-ivMean.spike = colMeans(mData.ercc)
-ivMean.gene = colMeans(mData.norm)
-ivMean.raw = colMeans(mData)
+hist(dfData$values, prob=T)
+mFitted = extract(fit.stan)$mu
 
-dfData = data.frame(Spike=ivMean.spike, Gene=ivMean.gene, Raw=ivMean.raw, treatment=dfSample$group1, Title=dfSample$title)
-dfData.st = stack(dfData[,1:3])
-dfData.st$treatment = dfData$treatment
-dfData.st$Title = factor(dfData$Title)
+apply(mFitted[sample(1:nrow(mFitted), size = 100), ], 1, function(x) lines(density(x)))
 
-
-xyplot(log(values) ~ Title, data=dfData.st, auto.key=list(columns=3), main='Average Gene Expression in Each Sample', type='b', groups=ind,
-       par.settings=list(superpose.line = list(lwd=0.5, lty=1)),
-       xlab='', ylab='Mean Expression', pch=20, scales=list(x=list(cex=0.7, rot=45)))
-
-xyplot((values) ~ Title, data=dfData.st, auto.key=list(columns=3), main='Average Gene Expression in Each Sample', type='b', groups=ind,
-       par.settings=list(superpose.line = list(lwd=0.5, lty=1)),
-       xlab='', ylab='Mean Expression', pch=20, scales=list(x=list(cex=0.7, rot=45)))
