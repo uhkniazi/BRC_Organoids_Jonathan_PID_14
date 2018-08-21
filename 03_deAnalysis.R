@@ -68,11 +68,11 @@ str(mData.norm)
 mData.norm = round(mData.norm, 0)
 hist(mData.norm)
 
-set.seed(123)
-i = sample(1:nrow(mData.norm), 3, replace = F)
-dfData = data.frame(t(mData.norm[i,]))
+# set.seed(123)
+# i = sample(1:nrow(mData.norm), 10, replace = F)
+# dfData = data.frame(t(mData.norm[i,]))
 
-#dfData = data.frame(t(mData.norm))
+dfData = data.frame(t(mData.norm))
 dfData = stack(dfData)
 dim(dfData)
 dfData$fBatch = factor(dfSample$group1)
@@ -85,7 +85,7 @@ dfData = droplevels.data.frame(dfData)
 dfData = dfData[order(dfData$Coef, dfData$Coef.adj1), ]
 str(dfData)
 
-# # # # ## setup the model
+# # # # # ## setup the model
 # library(lme4)
 # fit.lme1 = glmer.nb(values ~ 1  + (1 | Coef) + (1 | Coef.adj1), data=dfData)
 # summary(fit.lme1)
@@ -112,59 +112,48 @@ library(rstan)
 rstan_options(auto_write = TRUE)
 options(mc.cores = parallel::detectCores())
 
-stanDso = rstan::stan_model(file='nbinomResp2RandomEffectsMultipleScales.stan')
+stanDso = rstan::stan_model(file='nbinomResp2RandomEffects.stan')
 
-library(MASS)
-fitdistr(dfData$values[dfData$ind == 'ENSG00000141401'], 'negative binomial')
 ## calculate hyperparameters for variance of coefficients
 l = gammaShRaFromModeSD(sd(log(dfData$values+0.5)), 2*sd(log(dfData$values+0.5)))
-# # ## set initial values
-# ran = ranef(fit.lme1)
-# r1 = ran$Coef
-# r2 = ran$Coef.adj1
-# r3 = ran$Coef.adj2
-# 
-# r1 = rep(0, times=nlevels(dfData$Coef))
-# r2 = rep(0, times=nlevels(dfData$Coef.adj1))
-# #r3 = rep(0, times=nlevels(dfData$ind))
-# initf = function(chain_id = 1) {
-#   list(sigmaRan1 = 0.1, sigmaRan2=2, #rGroupsJitter1=r1, rGroupsJitter2=r2,
-#        iSize=8)
-# }
 
-### setup the input data for stan
-## we give each gene its own variance term
-## this however requires mapping of each variance term for each gene to the 
-## number of coefficients/jitters for that gene
-l2 = split(dfData$Coef, dfData$ind)
-l2 = sapply(l2, function(x) length(unique(x)))
-l2 = gl(length(l2), unique(l2))
+# ### setup the input data for stan
+# ## we give each gene its own variance term
+# ## this however requires mapping of each variance term for each gene to the 
+# ## number of coefficients/jitters for that gene
+# l2 = split(dfData$Coef, dfData$ind)
+# l2 = sapply(l2, function(x) length(unique(x)))
+# l2 = gl(length(l2), unique(l2))
+
+# lStanData = list(Ntotal=nrow(dfData), Nclusters1=nlevels(dfData$Coef),
+#                  Nclusters2=nlevels(dfData$Coef.adj1),
+#                  Nclusters1_variance=nlevels(l2),
+#                  Nsizes = nlevels(dfData$ind), ## each group of gene given its own dispersion term
+#                  NgroupMap1=as.numeric(dfData$Coef),
+#                  NgroupMap2=as.numeric(dfData$Coef.adj1),
+#                  rGroupsJitter1Map=as.numeric(l2), ## mapping each gene variance term to its group of coefficients/jitters
+#                  NsizeMap=as.numeric(dfData$ind),
+#                  y=dfData$values, 
+#                  gammaShape=l$shape, gammaRate=l$rate,
+#                  intercept = mean(log(dfData$values+0.5)), intercept_sd= sd(log(dfData$values+0.5))*2)
 
 lStanData = list(Ntotal=nrow(dfData), Nclusters1=nlevels(dfData$Coef),
                  Nclusters2=nlevels(dfData$Coef.adj1),
-                 Nclusters1_variance=nlevels(l2),
-                 Nsizes = nlevels(dfData$ind), ## each group of gene given its own dispersion term
                  NgroupMap1=as.numeric(dfData$Coef),
                  NgroupMap2=as.numeric(dfData$Coef.adj1),
-                 rGroupsJitter1Map=as.numeric(l2), ## mapping each gene variance term to its group of coefficients/jitters
-                 NsizeMap=as.numeric(dfData$ind),
+                 Ncol=1, 
                  y=dfData$values, 
                  gammaShape=l$shape, gammaRate=l$rate,
-                 intercept = mean(log(dfData$values+0.5)), intercept_sd= sd(log(dfData$values+0.5))*2)
-
+                 intercept = mean(log(dfData$values+0.5)), intercept_sd= sd(log(dfData$values+0.5))*3)
 
 fit.stan = sampling(stanDso, data=lStanData, iter=1500, chains=6,
-                    pars=c('sigmaRan1', 'sigmaRan2', 'betas',
-                           'iSize',
-                           'rGroupsJitter1',
-                           'rGroupsJitter2',
-                           'mu'
+                    pars=c('sigmaRan1', 'sigmaRan2', 'iSize',
+                           'rGroupsJitter1'
                            ),
-                    cores=6)#, init=initf)#, control=list(adapt_delta=0.99, max_treedepth = 15))
-#' save(fit.stan, file='temp/fit.stan.nb_noslope_26july.rds')
+                    cores=6)
+save(fit.stan, file='temp/fit.stan.nb_07Aug.rds')
 
-print(fit.stan, c('betas', 'sigmaRan1', 'sigmaRan2'), digits=3)
-traceplot(fit.stan, c('betas'))
+print(fit.stan, c('sigmaRan1', 'sigmaRan2'), digits=3)
 traceplot(fit.stan, 'sigmaRan1')
 traceplot(fit.stan, 'sigmaRan2')
 print(fit.stan, 'rGroupsJitter1')
@@ -203,7 +192,7 @@ levels(d$fBatch)
 ## repeat this for each comparison
 
 ## get a p-value for each comparison
-l = tapply(d$cols, d$split, FUN = function(x, base='SIO', deflection='ILC3') {
+l = tapply(d$cols, d$split, FUN = function(x, base='CD3', deflection='IL23+CD3') {
   c = x
   names(c) = as.character(d$fBatch[c])
   dif = getDifference(ivData = mCoef[,c[deflection]], ivBaseline = mCoef[,c[base]])
@@ -220,18 +209,16 @@ dfResults$adj.P.Val = p.adjust(dfResults$pvalue, method='BH')
 ### plot the results
 dfResults$logFC = dfResults$difference
 dfResults$P.Value = dfResults$pvalue
-head(rownames(dfResults))
-library(org.Mm.eg.db)
-## remove X from annotation names
-dfResults$ind = gsub('X', '', as.character(dfResults$ind))
 
-df = AnnotationDbi::select(org.Mm.eg.db, keys = as.character(dfResults$ind), columns = 'SYMBOL', keytype = 'ENTREZID')
-i = match(dfResults$ind, df$ENTREZID)
+library(org.Hs.eg.db)
+df = select(org.Hs.eg.db, keys = as.character(rownames(dfResults)), columns = 'SYMBOL', keytype = 'ENSEMBL')
+i = match(rownames(dfResults), df$ENSEMBL)
 df = df[i,]
 dfResults$SYMBOL = df$SYMBOL
-identical(dfResults$ind, df$ENTREZID)
+identical(rownames(dfResults), df$ENSEMBL)
 ## produce the plots 
-f_plotVolcano(dfResults, 'Bayes: ILC3 vs SIO', fc.lim=c(-3.5, 6.5))
+range(dfResults$difference)
+f_plotVolcano(dfResults, 'IL23+CD3 vs CD3', fc.lim=c(-2.2, 2.2))
 
 m = tapply(dfData$values, dfData$ind, mean)
 i = match(rownames(dfResults), names(m))
@@ -239,32 +226,31 @@ m = m[i]
 identical(names(m), rownames(dfResults))
 plotMeanFC(log(m), dfResults, 0.1, '')
 table(dfResults$pvalue < 0.05)
-table(dfResults$adj.P.Val < 0.05)
+table(dfResults$adj.P.Val < 0.01)
 ## save the results 
-write.csv(dfResults, file='results/DEAnalysisILC3VsSIO.xls')
+write.csv(dfResults, file='results/DEAnalysisIL23+CD3VsCD3.xls')
 
 
 
 ######### do a comparison with deseq2
 f = factor(dfSample$group1)
-f = relevel(f, 'SIO')
-dfDesign = data.frame(Treatment = f, fAdjust1 = factor(dfSample$group3), fAdjust2=dfSample$fNewBatch,
-                      row.names=colnames(mData))
+f = relevel(f, 'Unstim')
+dfDesign = data.frame(Treatment = f, fAdjust1 = factor(dfSample$group2), row.names=colnames(mData))
 
 str(dfDesign)
-oDseq = DESeqDataSetFromMatrix(mData, dfDesign, design = ~ Treatment + fAdjust1 + fAdjust2)
+oDseq = DESeqDataSetFromMatrix(mData, dfDesign, design = ~ Treatment + fAdjust1)
 oDseq = DESeq(oDseq)
 plotDispEsts(oDseq)
 resultsNames(oDseq)
-oRes = results(oDseq, contrast=c('Treatment', 'ILC3', 'SIO'))
+oRes = results(oDseq, contrast=c('Treatment', 'IL23.CD3', 'Unstim'))
 plotMA(oRes)
 temp = as.data.frame(oRes)
-i = match((dfResults$ind), rownames(temp))
+i = match(as.character(dfResults$ind), rownames(temp))
 temp = temp[i,]
-identical((dfResults$ind), rownames(temp))
+identical(as.character(dfResults$ind), rownames(temp))
 plot(dfResults$logFC, temp$log2FoldChange, pch=20, main='ILC3: DEseq2 vs Bayes', xlab='Bayes', ylab='DEseq2')
-table(oRes$padj < 0.05)
-write.csv(temp, file='results/DEAnalysisILC3VsSIO_Deseq2.xls')
+table(oRes$padj < 0.01)
+#write.csv(temp, file='results/DEAnalysisILC3VsSIO_Deseq2.xls')
 
 
 #### plot the deseq2 volcano plot
@@ -273,13 +259,10 @@ dfResults$logFC = log(2^dfResults$log2FoldChange)
 dfResults$P.Value = dfResults$pvalue
 dfResults$adj.P.Val = dfResults$padj
 head(rownames(dfResults))
-## remove X from annotation names
-dfResults$ind = rownames(dfResults)
 
-df = AnnotationDbi::select(org.Mm.eg.db, keys = as.character(dfResults$ind), columns = 'SYMBOL', keytype = 'ENTREZID')
-i = match(dfResults$ind, df$ENTREZID)
+df = select(org.Hs.eg.db, keys = as.character(rownames(dfResults)), columns = 'SYMBOL', keytype = 'ENSEMBL')
+i = match(rownames(dfResults), df$ENSEMBL)
 df = df[i,]
 dfResults$SYMBOL = df$SYMBOL
-identical(dfResults$ind, df$ENTREZID)
-## produce the plots 
-f_plotVolcano(dfResults, 'DEseq2: ILC3 vs SIO', fc.lim=c(-4.5, 7))
+identical(rownames(dfResults), df$ENSEMBL)## produce the plots 
+f_plotVolcano(dfResults, 'DEseq2: ILC3 vs SIO', fc.lim=range(dfResults$logFC))
